@@ -1,0 +1,1445 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Pantau Sampah &middot; Smart Trash Vision</title>
+
+<!-- PWA: bikin dashboard ini bisa di-install seperti aplikasi -->
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#1f2b1c">
+<meta name="background-color" content="#f6f4ee">
+
+<!-- Android / Chrome -->
+<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+<link rel="icon" type="image/png" sizes="512x512" href="icon-512.png">
+
+<!-- iOS Safari: "Add to Home Screen" -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="STV">
+<link rel="apple-touch-icon" href="icon-192.png">
+
+<!-- Klien MQTT untuk browser (konek via WebSocket ke broker) -->
+<script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap');
+
+  :root {
+    --soil: #1f2b1c;
+    --paper: #f6f4ee;
+    --paper-2: #efece2;
+    --organik: #4a7c3f;
+    --organik-dim: #e5ede1;
+    --anorganik: #b8891a;
+    --anorganik-dim: #f5ecd3;
+    --b3: #b8422f;
+    --b3-dim: #f6e2dd;
+    --residu: #5b5f66;
+    --residu-dim: #e6e6e8;
+    --ink: #1f2b1c;
+    --ink-soft: #66705f;
+    --ink-faint: #9aa392;
+    --line: #d8d3c4;
+    --card-color: var(--organik);
+    --card-dim: var(--organik-dim);
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: 'Inter', sans-serif;
+    min-height: 100vh;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  ::selection { background: var(--organik); color: white; }
+
+  button { font-family: inherit; }
+
+  /* ---------- Top bar ---------- */
+  .topbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    padding: 18px clamp(16px, 5vw, 60px);
+    border-bottom: 1px solid var(--line);
+    position: sticky;
+    top: 0;
+    background: rgba(246, 244, 238, 0.92);
+    backdrop-filter: blur(8px);
+    z-index: 10;
+  }
+  .topbar-left {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+  }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+  }
+  .brand-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .status {
+    flex-shrink: 0;
+  }
+  .status-text-full { display: inline; }
+  .status-text-short { display: none; }
+  .topbar-back {
+    display: none;
+    align-items: center;
+    gap: 8px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    background: none;
+    border: 1px solid var(--line);
+    color: var(--ink);
+    padding: 7px 14px 7px 10px;
+    border-radius: 20px;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: border-color 0.2s ease, background 0.2s ease, color 0.2s ease;
+  }
+  .topbar-back:hover { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+  .topbar.in-detail .brand { display: none; }
+  .topbar.in-detail .topbar-back { display: inline-flex; }
+  .topbar-detail-label {
+    font-family: 'Space Grotesk', sans-serif;
+    font-weight: 600;
+    font-size: 14px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    display: none;
+  }
+  .topbar.in-detail .topbar-detail-label { display: inline; }
+  @media (max-width: 560px) {
+    .topbar { padding: 14px 16px; }
+    .brand-name { font-size: 15.5px; }
+    .status-text-full { display: none; }
+    .status-text-short { display: inline; }
+    .topbar.in-detail .status { display: none; }
+  }
+  .brand-mark {
+    width: 30px; height: 30px;
+    display: flex; align-items: center; justify-content: center;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    background: var(--ink);
+    color: var(--paper);
+    border-radius: 7px;
+  }
+  .brand-name {
+    font-family: 'Space Grotesk', sans-serif;
+    font-weight: 700;
+    font-size: 18px;
+    letter-spacing: -0.01em;
+  }
+  .status {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11.5px;
+    color: var(--ink-soft);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--organik);
+    box-shadow: 0 0 0 3px var(--organik-dim);
+    animation: pulse 2.4s ease-in-out infinite;
+    flex-shrink: 0;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.35; }
+  }
+  .dot.offline {
+    background: var(--b3);
+    box-shadow: 0 0 0 3px var(--b3-dim);
+  }
+
+  /* ---------- Views ---------- */
+  .view { display: none; }
+  .view.active { display: block; animation: fadeIn 0.35s ease; }
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(6px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  /* ---------- Dashboard hero ---------- */
+  .hero {
+    padding: 52px clamp(20px, 5vw, 60px) 44px;
+    max-width: 1180px;
+    display: grid;
+    grid-template-columns: 1.2fr 0.8fr;
+    gap: 48px;
+    align-items: center;
+  }
+  @media (max-width: 900px) {
+    .hero { grid-template-columns: 1fr; gap: 32px; }
+  }
+  .eyebrow {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11.5px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+    margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .eyebrow::before {
+    content: "";
+    width: 16px; height: 1px;
+    background: var(--ink-faint);
+  }
+  h1 {
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: clamp(30px, 4vw, 44px);
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    line-height: 1.1;
+    max-width: 13ch;
+    margin-bottom: 22px;
+  }
+  .hero-desc {
+    font-size: 14.5px;
+    color: var(--ink-soft);
+    line-height: 1.65;
+    max-width: 42ch;
+  }
+  .hero-total {
+    margin-top: 30px;
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+  }
+  .hero-total .num {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: clamp(36px, 5vw, 52px);
+    font-weight: 700;
+    line-height: 1;
+  }
+  .hero-total .unit {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 15px;
+    color: var(--ink-soft);
+  }
+  .hero-total .label {
+    font-size: 13px;
+    color: var(--ink-soft);
+    margin-left: 2px;
+  }
+
+  /* ---------- Composition ring (signature element) ---------- */
+  .ring-wrap {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    position: relative;
+  }
+  .ring-wrap svg { transform: rotate(-90deg); }
+  .ring-center {
+    position: absolute;
+    text-align: center;
+  }
+  .ring-center .pct {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 26px;
+    font-weight: 700;
+  }
+  .ring-center .txt {
+    font-size: 11px;
+    color: var(--ink-soft);
+    margin-top: 2px;
+    max-width: 12ch;
+  }
+  .ring-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 18px;
+    justify-content: center;
+    margin-top: 18px;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11.5px;
+    color: var(--ink-soft);
+  }
+  .legend-item .sw { width: 8px; height: 8px; border-radius: 2px; }
+
+  /* ---------- Cards grid ---------- */
+  .grid {
+    padding: 0 clamp(20px, 5vw, 60px) 60px;
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 14px;
+    max-width: 1180px;
+  }
+  @media (max-width: 860px) {
+    .grid { grid-template-columns: repeat(2, 1fr); }
+  }
+  @media (max-width: 520px) {
+    .grid { grid-template-columns: 1fr; }
+  }
+
+  .card {
+    background: var(--paper-2);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 26px 24px;
+    cursor: pointer;
+    text-align: left;
+    color: inherit;
+    position: relative;
+    transition: transform 0.22s ease, box-shadow 0.22s ease, border-color 0.22s ease;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    min-height: 200px;
+  }
+  .card[data-cat="organik"] { --card-color: var(--organik); --card-dim: var(--organik-dim); }
+  .card[data-cat="anorganik"] { --card-color: var(--anorganik); --card-dim: var(--anorganik-dim); }
+  .card[data-cat="b3"] { --card-color: var(--b3); --card-dim: var(--b3-dim); }
+  .card[data-cat="residu"] { --card-color: var(--residu); --card-dim: var(--residu-dim); }
+
+  .card:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 10px 24px -12px rgba(31,43,28,0.25);
+    border-color: var(--card-color);
+  }
+  .card:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+
+  .card-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+  }
+  .card-icon {
+    width: 34px; height: 34px;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--card-dim);
+    border-radius: 9px;
+    color: var(--card-color);
+  }
+  .card-icon svg { width: 18px; height: 18px; }
+  .card-arrow {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 14px;
+    color: var(--ink-faint);
+    transition: transform 0.25s ease, color 0.25s ease;
+  }
+  .card:hover .card-arrow { transform: translate(3px, -3px); color: var(--card-color); }
+
+  .card-name {
+    font-family: 'Space Grotesk', sans-serif;
+    font-weight: 600;
+    font-size: 15.5px;
+    line-height: 1.35;
+  }
+  .card-sub {
+    font-size: 12px;
+    color: var(--ink-faint);
+    line-height: 1.4;
+    margin-top: 3px;
+  }
+  .card-weight { margin-top: auto; }
+  .card-weight .num {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 700;
+    font-size: 30px;
+    line-height: 1;
+  }
+  .card-weight .unit {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12.5px;
+    color: var(--ink-soft);
+    margin-left: 4px;
+  }
+  .card-bar {
+    margin-top: 12px;
+    height: 5px;
+    background: var(--line);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .card-bar-fill {
+    height: 100%;
+    background: var(--card-color);
+    border-radius: 3px;
+    transition: width 0.7s cubic-bezier(.2,.8,.2,1);
+  }
+  .card-pct {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10.5px;
+    color: var(--ink-faint);
+    margin-top: 6px;
+  }
+
+  .foot-note {
+    margin: 0 clamp(20px, 5vw, 60px) 60px;
+    padding-top: 24px;
+    border-top: 1px solid var(--line);
+    max-width: 1180px;
+    font-size: 13px;
+    color: var(--ink-soft);
+    line-height: 1.6;
+  }
+  .foot-note b { color: var(--ink); }
+
+  /* ---------- Detail view ---------- */
+  .detail-head {
+    padding: 22px clamp(20px, 5vw, 60px) 0;
+    max-width: 860px;
+  }
+  .back-btn {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    letter-spacing: 0.03em;
+    background: none;
+    border: 1px solid var(--line);
+    color: var(--ink);
+    padding: 8px 14px;
+    border-radius: 20px;
+    cursor: pointer;
+    transition: border-color 0.2s ease, background 0.2s ease, color 0.2s ease;
+  }
+  .back-btn:hover { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+
+  .detail-hero {
+    padding: 34px clamp(20px, 5vw, 60px) 38px;
+    max-width: 860px;
+    border-bottom: 1px solid var(--line);
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 24px;
+    align-items: end;
+  }
+  @media (max-width: 640px) {
+    .detail-hero { grid-template-columns: 1fr; }
+  }
+  .detail-cat-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11.5px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 16px;
+    color: var(--ink-soft);
+  }
+  .detail-cat-label .sw { width: 9px; height: 9px; border-radius: 2px; background: var(--card-color); }
+  .detail-title {
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: clamp(24px, 3.4vw, 34px);
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    line-height: 1.15;
+    margin-bottom: 18px;
+    max-width: 22ch;
+  }
+  .detail-weight {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .detail-weight .num {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 42px;
+    font-weight: 700;
+  }
+  .detail-weight .unit {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 15px;
+    color: var(--ink-soft);
+  }
+  .detail-weight .sub {
+    font-size: 13px;
+    color: var(--ink-faint);
+    width: 100%;
+  }
+
+  /* progress ring on detail hero */
+  .progress-ring-wrap {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .progress-ring-wrap svg { transform: rotate(-90deg); }
+  .progress-ring-center {
+    position: absolute;
+    text-align: center;
+  }
+  .progress-ring-center .n {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 700;
+    font-size: 15px;
+  }
+  .progress-ring-center .t {
+    font-size: 9.5px;
+    color: var(--ink-faint);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+
+  .detail-body {
+    padding: 38px clamp(20px, 5vw, 60px) 80px;
+    max-width: 860px;
+  }
+  .detail-body h2 {
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 18px;
+    font-weight: 700;
+    margin-bottom: 4px;
+  }
+  .section-desc {
+    font-size: 13.5px;
+    color: var(--ink-soft);
+    margin-bottom: 22px;
+    line-height: 1.6;
+  }
+
+  .callout {
+    border-left: 3px solid var(--card-color);
+    padding: 18px 22px;
+    border-radius: 4px;
+    font-size: 13.5px;
+    line-height: 1.65;
+    margin-bottom: 40px;
+  }
+  .callout b { display: block; margin-bottom: 5px; font-family: 'Space Grotesk', sans-serif; font-size: 14px; }
+
+  /* progress bar for steps */
+  .steps-progress-bar {
+    height: 6px;
+    background: var(--line);
+    border-radius: 3px;
+    overflow: hidden;
+    margin-bottom: 30px;
+  }
+  .steps-progress-fill {
+    height: 100%;
+    background: var(--card-color);
+    border-radius: 3px;
+    transition: width 0.5s cubic-bezier(.2,.8,.2,1);
+  }
+  .steps-progress-label {
+    display: flex;
+    justify-content: space-between;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: var(--ink-soft);
+    margin-bottom: 10px;
+  }
+
+  /* timeline steps */
+  .steps { position: relative; margin-bottom: 20px; }
+  .step {
+    display: grid;
+    grid-template-columns: 34px 1fr;
+    gap: 18px;
+    position: relative;
+    padding-bottom: 26px;
+  }
+  .step::before {
+    content: "";
+    position: absolute;
+    left: 16px;
+    top: 34px;
+    bottom: 0;
+    width: 1px;
+    background: var(--line);
+  }
+  .step:last-child::before { display: none; }
+
+  .step-marker {
+    width: 33px; height: 33px;
+    border-radius: 50%;
+    border: 1.5px solid var(--line);
+    display: flex; align-items: center; justify-content: center;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--ink-faint);
+    background: var(--paper);
+    flex-shrink: 0;
+    transition: all 0.25s ease;
+    z-index: 1;
+  }
+  .step.done .step-marker {
+    background: var(--card-color);
+    border-color: var(--card-color);
+    color: white;
+  }
+  .step.current .step-marker {
+    border-color: var(--card-color);
+    color: var(--card-color);
+    box-shadow: 0 0 0 4px var(--card-dim);
+  }
+
+  .step-content { padding-top: 4px; }
+  .step-title-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-bottom: 6px;
+  }
+  .step-title {
+    font-weight: 600;
+    font-size: 15px;
+    font-family: 'Space Grotesk', sans-serif;
+  }
+  .step.locked .step-title { color: var(--ink-faint); }
+  .step.done .step-title { color: var(--ink-soft); }
+  .step-time {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10.5px;
+    color: var(--ink-faint);
+    border: 1px solid var(--line);
+    padding: 2px 8px;
+    border-radius: 12px;
+  }
+  .step-text {
+    font-size: 13.5px;
+    color: var(--ink-soft);
+    line-height: 1.65;
+    max-width: 56ch;
+  }
+  .step.locked .step-text { color: var(--ink-faint); }
+  .step-tip {
+    margin-top: 10px;
+    font-size: 12.5px;
+    color: var(--card-color);
+    background: var(--card-dim);
+    display: inline-block;
+    padding: 8px 12px;
+    border-radius: 6px;
+    line-height: 1.5;
+  }
+  .step-action {
+    margin-top: 14px;
+  }
+  .step-btn {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    font-weight: 600;
+    background: var(--card-color);
+    color: white;
+    border: none;
+    padding: 10px 18px;
+    border-radius: 20px;
+    cursor: pointer;
+    transition: opacity 0.2s ease, transform 0.1s ease;
+  }
+  .step-btn:hover { opacity: 0.88; }
+  .step-btn:active { transform: scale(0.97); }
+
+  .steps-done-banner {
+    margin-top: 12px;
+    padding: 22px 24px;
+    background: var(--card-dim);
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+  .steps-done-banner .msg { font-family: 'Space Grotesk', sans-serif; font-weight: 600; font-size: 14.5px; }
+  .steps-done-banner .sub { font-size: 12.5px; color: var(--ink-soft); margin-top: 3px; }
+  .reset-btn {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11.5px;
+    background: none;
+    border: 1px solid var(--card-color);
+    color: var(--card-color);
+    padding: 8px 14px;
+    border-radius: 20px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .reset-btn:hover { background: var(--card-color); color: white; }
+
+  h2.sec2 { margin-top: 46px; }
+
+  .tag-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 4px;
+  }
+  .tag {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    background: none;
+    border: 1px solid var(--line);
+    padding: 6px 12px;
+    border-radius: 20px;
+    color: var(--ink-soft);
+    cursor: pointer;
+    transition: border-color 0.2s ease, background 0.2s ease, color 0.2s ease;
+  }
+  .tag:hover { border-color: var(--card-color); color: var(--card-color); }
+  .tag.active { background: var(--card-color); border-color: var(--card-color); color: #fff; }
+  .tag-hint {
+    font-size: 12px;
+    color: var(--ink-faint);
+    margin-top: 10px;
+  }
+
+  /* route detail: langkah menyalurkan ke tujuan tertentu */
+  .route-detail {
+    margin-top: 26px;
+    padding-top: 26px;
+    border-top: 1px dashed var(--line);
+    animation: fadeIn 0.3s ease;
+  }
+  .route-detail-title {
+    font-family: 'Space Grotesk', sans-serif;
+    font-weight: 600;
+    font-size: 15px;
+    margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .route-detail-title .sw { width: 8px; height: 8px; border-radius: 50%; background: var(--card-color); }
+  .step.info .step-marker { border-color: var(--card-color); color: var(--card-color); }
+  .step.info .step-text { color: var(--ink-soft); }
+
+  /* residu route */
+  .route {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    align-items: center;
+    gap: 14px;
+    padding: 30px;
+    background: var(--card-dim);
+    border-radius: 12px;
+    margin-bottom: 40px;
+  }
+  .route-point { text-align: center; }
+  .route-point .label { font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--ink-soft); text-transform: uppercase; letter-spacing: 0.08em; }
+  .route-point .name { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 16px; margin-top: 4px; }
+  .route-arrow { font-family: 'JetBrains Mono', monospace; color: var(--card-color); font-size: 18px; }
+  @media (max-width: 520px) {
+    .route { grid-template-columns: 1fr; }
+    .route-arrow { transform: rotate(90deg); }
+  }
+</style>
+</head>
+<body>
+
+  <div class="topbar" id="topbar">
+    <div class="topbar-left">
+      <div class="brand">
+        <span class="brand-mark">STV</span>
+        <span class="brand-name">Smart Trash Vision</span>
+      </div>
+      <button class="topbar-back" onclick="showDashboard()">&larr; Kembali</button>
+      <span class="topbar-detail-label" id="topbar-detail-label"></span>
+    </div>
+    <div class="status">
+      <span class="dot" id="mqtt-dot"></span>
+      <span class="status-text-full" id="mqtt-status-full">Menghubungkan ke alat&hellip;</span>
+      <span class="status-text-short" id="mqtt-status-short">Menghubungkan&hellip;</span>
+    </div>
+  </div>
+
+  <!-- ===== DASHBOARD VIEW ===== -->
+  <div class="view active" id="view-dashboard">
+    <div class="hero">
+      <div>
+        <div class="eyebrow">Ringkasan hari ini</div>
+        <h1>Berat sampah per kategori</h1>
+        <p class="hero-desc">Data berikut diambil dari sensor berat pada setiap wadah penampungan. Ketuk salah satu kategori di bawah untuk melihat panduan pengolahan lengkap dan langkah-langkahnya.</p>
+        <div class="hero-total">
+          <span class="num" id="total-num">0</span>
+          <span class="unit">kg</span>
+          <span class="label">total tertampung</span>
+        </div>
+      </div>
+      <div>
+        <div class="ring-wrap">
+          <svg width="190" height="190" viewBox="0 0 190 190" id="comp-ring"></svg>
+          <div class="ring-center">
+            <div class="pct" id="ring-total">0<span style="font-size:14px">kg</span></div>
+            <div class="txt">total tertampung</div>
+          </div>
+        </div>
+        <div class="ring-legend" id="ring-legend"></div>
+      </div>
+    </div>
+
+    <div class="grid" id="card-grid"></div>
+
+    <div class="foot-note">
+      <b>Cara baca dashboard:</b> lingkaran di atas menunjukkan proporsi tiap kategori terhadap total sampah yang tertampung. Ketuk kartu kategori untuk membuka panduan pengolahan langkah demi langkah &mdash; progres pengolahan bisa ditandai selesai setiap kali satu tahap sudah dikerjakan.
+    </div>
+  </div>
+
+  <!-- ===== DETAIL VIEW ===== -->
+  <div class="view" id="view-detail">
+    <div class="detail-hero">
+      <div>
+        <div class="detail-cat-label" id="d-label"></div>
+        <div class="detail-title" id="d-title"></div>
+        <div class="detail-weight">
+          <span class="num" id="d-num"></span>
+          <span class="unit">kg</span>
+          <span class="sub" id="d-sub"></span>
+        </div>
+      </div>
+      <div class="progress-ring-wrap" id="progress-ring-wrap" style="display:none">
+        <svg width="76" height="76" viewBox="0 0 76 76">
+          <circle cx="38" cy="38" r="32" fill="none" stroke="var(--line)" stroke-width="6"/>
+          <circle cx="38" cy="38" r="32" fill="none" stroke="var(--card-color)" stroke-width="6"
+                  stroke-linecap="round" id="progress-ring-circle" stroke-dasharray="201.06" stroke-dashoffset="201.06"/>
+        </svg>
+        <div class="progress-ring-center">
+          <div class="n" id="progress-ring-n">0/0</div>
+          <div class="t">tahap</div>
+        </div>
+      </div>
+    </div>
+    <div class="detail-body" id="d-body"></div>
+  </div>
+
+<script>
+  const icons = {
+    organik: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M11 20A7 7 0 0 1 9.8 6.1C15.5 5 17 4.48 19 2c1 5-.5 6.5-2 8.5s-3.5 2.5-4 2.5"/><path d="M2 22c1.5-4 5-8 10-9"/></svg>`,
+    anorganik: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3.5-7.1"/><path d="M21 3v6h-6"/></svg>`,
+    b3: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>`,
+    residu: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>`
+  };
+
+  const data = {
+    organik: {
+      name: "Organik",
+      weight: 4.2,
+      maxCapacity: 5,
+      color: "#4a7c3f",
+      dimVar: "var(--organik-dim)",
+      subLabel: "sisa makanan & bahan alami",
+      callout: {
+        title: "Kenapa dipisah?",
+        text: "Sampah organik terurai secara alami dan bisa diolah menjadi kompos yang menyuburkan tanah. Memisahkannya sejak awal mencegah kontaminasi ke sampah anorganik yang masih bisa didaur ulang, sekaligus mempercepat proses pengomposan karena tidak tercampur bahan lain."
+      },
+      steps: [
+        { title: "Pisahkan dari kantong plastik", time: "1 menit", text: "Tuang sampah organik langsung ke wadah kompos tanpa kantong plastik pembungkus. Plastik menghambat penguraian dan bisa mencemari kompos yang dihasilkan.", tip: "Kalau selama ini dikumpulkan pakai kantong plastik, gunakan kantong kertas atau wadah yang bisa dipakai ulang sebagai gantinya." },
+        { title: "Kenali dua jenis bahan", time: "2 menit", text: "Bahan 'hijau' (basah, kaya nitrogen) seperti sisa sayur, buah, dan ampas kopi mempercepat penguraian. Bahan 'cokelat' (kering, kaya karbon) seperti daun kering, kardus, atau serbuk gergaji menjaga struktur kompos tetap berongga.", tip: "Perbandingan ideal sekitar 1 bagian hijau : 2-3 bagian cokelat agar kompos tidak terlalu basah dan berbau." },
+        { title: "Cacah bahan berukuran besar", time: "5-10 menit", text: "Potong sisa sayur, kulit buah, atau ranting kecil menjadi bagian yang lebih kecil (sekitar 2-3 cm). Semakin kecil ukurannya, semakin luas permukaan yang bisa diurai mikroba, sehingga proses lebih cepat." },
+        { title: "Susun berlapis di wadah kompos", time: "10 menit", text: "Mulai dengan lapisan bahan cokelat di dasar wadah, lalu lapisan hijau, tutup lagi dengan cokelat. Pola berlapis ini membantu sirkulasi udara dan mengurangi bau selama proses berlangsung." },
+        { title: "Jaga kelembapan seperti spons diperas", time: "cek tiap 2-3 hari", text: "Kompos yang ideal terasa lembap tapi tidak menggenang air. Jika terlalu kering, percikkan sedikit air; jika terlalu basah dan berbau, tambahkan bahan cokelat kering seperti daun atau kardus sobek." },
+        { title: "Aduk tumpukan secara berkala", time: "tiap 3-4 hari", text: "Aduk atau balik tumpukan kompos menggunakan sekop kecil agar oksigen tercampur merata ke seluruh bagian. Aerasi yang baik mempercepat kerja mikroba dan mencegah bau busuk akibat pembusukan anaerobik." },
+        { title: "Panen saat kompos sudah matang", time: "3-6 minggu", text: "Kompos siap digunakan ketika warnanya berubah cokelat gelap seperti tanah, teksturnya rapuh dan remah, serta baunya seperti tanah hutan (bukan bau busuk). Ayak untuk memisahkan bagian yang belum terurai sempurna, lalu kembalikan ke tumpukan baru." }
+      ],
+      tags: [
+        {
+          name: "Kompos padat",
+          steps: [
+            { title: "Susun bahan hijau & cokelat berlapis", text: "Lapisi wadah kompos dengan bahan cokelat (daun kering, kardus) di dasar, lalu bahan hijau (sisa sayur/buah), tutup lagi dengan cokelat." },
+            { title: "Jaga kelembapan & aduk berkala", text: "Pastikan tumpukan lembap seperti spons diperas, dan aduk setiap 3-4 hari agar oksigen tercampur merata dan tidak berbau busuk." },
+            { title: "Panen setelah 3-6 minggu", text: "Kompos siap saat warnanya cokelat gelap, teksturnya remah, dan baunya seperti tanah &mdash; ayak lalu simpan atau gunakan langsung." }
+          ]
+        },
+        {
+          name: "Pupuk cair (POC)",
+          steps: [
+            { title: "Campur sisa organik cair dengan air & gula", text: "Masukkan sisa buah/sayur yang mudah membusuk ke wadah tertutup, tambahkan air dan sedikit gula atau molase sebagai starter fermentasi (kira-kira perbandingan 1:1)." },
+            { title: "Fermentasi 2-3 minggu", text: "Tutup wadah namun beri celah kecil untuk gas fermentasi keluar. Simpan di tempat teduh dan kocok setiap 2-3 hari hingga tercium bau asam segar, bukan bau busuk." },
+            { title: "Saring dan encerkan", text: "Saring cairan yang terbentuk, encerkan dengan air (misal 1 bagian POC : 10 bagian air) sebelum disiramkan ke tanaman sebagai pupuk cair." }
+          ]
+        },
+        {
+          name: "Pakan maggot BSF",
+          steps: [
+            { title: "Siapkan wadah budidaya (biopond)", text: "Gunakan ember atau wadah berlubang drainase, lalu tebar bibit larva atau telur BSF (Black Soldier Fly) dari peternak lokal." },
+            { title: "Beri pakan sisa organik cacah", text: "Masukkan sisa sayur/buah/dapur yang sudah dicacah kecil sebagai pakan harian larva secukupnya agar tidak menumpuk dan membusuk." },
+            { title: "Jaga kondisi wadah", text: "Letakkan di tempat teduh, jaga kelembapan agar tidak terlalu basah maupun kering, dan pantau setiap hari." },
+            { title: "Panen setelah 2-3 minggu", text: "Maggot yang sudah besar bisa dipanen sebagai pakan ternak/ikan, sementara sisa residunya (kasgot) bisa dipakai sebagai pupuk tambahan." }
+          ]
+        },
+        {
+          name: "Biopori",
+          steps: [
+            { title: "Buat lubang biopori", text: "Bor lubang vertikal berdiameter sekitar 10 cm dengan kedalaman 80-100 cm di halaman atau taman menggunakan alat bor biopori." },
+            { title: "Masukkan sampah organik cacah", text: "Isi lubang secara berkala dengan sampah organik yang sudah dicacah kecil." },
+            { title: "Tutup dengan penutup berlubang", text: "Gunakan penutup berlubang agar air hujan dan udara tetap bisa masuk, namun aman dari serangga maupun anak-anak." },
+            { title: "Panen kompos setelah 2-3 bulan", text: "Sebagian kompos hasil biopori bisa diambil secara berkala, dan lubang yang sama bisa dipakai kembali &mdash; biopori juga membantu resapan air hujan." }
+          ]
+        }
+      ]
+    },
+    anorganik: {
+      name: "Anorganik",
+      weight: 3.1,
+      maxCapacity: 5,
+      color: "#b8891a",
+      dimVar: "var(--anorganik-dim)",
+      subLabel: "plastik, kertas, logam, kaca",
+      callout: {
+        title: "Kenapa dipisah?",
+        text: "Sebagian besar sampah anorganik bisa diolah kembali menjadi bahan baku baru. Memilahnya berdasarkan jenis material sejak awal membuat proses daur ulang di fasilitas pengolahan jauh lebih efisien, dan mengurangi volume sampah yang berakhir di tempat pembuangan akhir."
+      },
+      steps: [
+        { title: "Pisahkan berdasarkan jenis material", time: "5 menit", text: "Kelompokkan sampah menjadi empat jenis utama: plastik, kertas/kardus, logam, dan kaca. Setiap material punya proses daur ulang dan nilai jual yang berbeda di lapak atau bank sampah.", tip: "Simpan masing-masing jenis di wadah atau karung terpisah agar tidak perlu dipilah ulang saat akan disetorkan." },
+        { title: "Kenali kode daur ulang pada plastik", time: "sekali pelajari", text: "Sebagian besar kemasan plastik punya simbol segitiga panah berisi angka 1-7 di bagian bawah. Angka ini menandakan jenis resin plastik, dan tidak semua jenis diterima di setiap lapak daur ulang &mdash; PET (1) dan HDPE (2) umumnya paling mudah diterima." },
+        { title: "Bilas sisa makanan atau cairan", time: "2-3 menit per item", text: "Cuci kemasan bekas makanan atau minuman dengan air seadanya, lalu tiriskan hingga kering. Sisa makanan yang tertinggal bisa membusuk, menimbulkan bau, dan mengundang serangga selama disimpan menunggu disetorkan." },
+        { title: "Pisahkan komponen berbeda material", time: "1-2 menit per item", text: "Beberapa kemasan terdiri dari campuran material, misalnya botol plastik dengan tutup dan label berbahan berbeda. Jika memungkinkan, lepaskan bagian-bagian ini agar masing-masing bisa didaur ulang sesuai jenisnya." },
+        { title: "Padatkan dan ratakan volume", time: "1 menit per item", text: "Kempeskan botol plastik dengan menginjak atau memutar badannya, dan lipat kardus hingga rata. Langkah ini menghemat ruang penyimpanan sekaligus mempermudah pengangkutan dalam jumlah banyak." },
+        { title: "Setorkan ke bank sampah atau lapak terdekat", time: "berkala, mis. mingguan", text: "Kumpulkan sampah anorganik terpilah hingga jumlahnya cukup banyak, lalu setorkan ke bank sampah, lapak pengepul, atau titik drop-off daur ulang di sekitar tempat tinggal. Sebagian bank sampah memberi nilai tukar sesuai jenis dan berat material." }
+      ],
+      tags: [
+        {
+          name: "Bank sampah",
+          steps: [
+            { title: "Pilah sesuai kategori bank sampah", text: "Kelompokkan lagi plastik, kertas, logam, dan kaca sesuai kategori yang diterima bank sampah setempat." },
+            { title: "Timbang di rumah", text: "Timbang masing-masing jenis agar tahu estimasi nilainya sebelum disetorkan." },
+            { title: "Setorkan sesuai jadwal", text: "Bawa ke bank sampah pada jadwal operasionalnya agar tercatat sebagai saldo tabungan sampah." }
+          ]
+        },
+        {
+          name: "Lapak pengepul",
+          steps: [
+            { title: "Kumpulkan material bernilai jual", text: "Kumpulkan kardus, botol plastik PET, logam, dan kaleng aluminium dalam jumlah cukup banyak." },
+            { title: "Cek harga per kilogram", text: "Hubungi atau datangi lapak pengepul terdekat untuk menanyakan harga tiap jenis material." },
+            { title: "Timbang dan serahkan", text: "Serahkan langsung ke lapak &mdash; umumnya dibayar tunai saat itu juga." }
+          ]
+        },
+        {
+          name: "Kerajinan ecobrick",
+          steps: [
+            { title: "Siapkan botol plastik PET", text: "Gunakan botol plastik bersih dan benar-benar kering sebagai wadah ecobrick." },
+            { title: "Padatkan sampah plastik lunak", text: "Masukkan plastik lunak yang bersih dan kering (bungkus makanan, kresek) sedikit demi sedikit sambil dipadatkan dengan tongkat hingga botol keras seperti batu bata." },
+            { title: "Rangkai jadi furnitur", text: "Kumpulkan beberapa ecobrick untuk dirangkai jadi kursi, meja, atau disumbangkan ke komunitas ecobrick setempat." }
+          ]
+        },
+        {
+          name: "Drop-off daur ulang",
+          steps: [
+            { title: "Cari titik drop-off terdekat", text: "Cek lokasi drop-off daur ulang di mal, minimarket tertentu, atau event bank sampah keliling." },
+            { title: "Pisahkan sesuai jenis yang diterima", text: "Beberapa titik hanya menerima jenis material tertentu, jadi pastikan pilah sesuai ketentuannya." },
+            { title: "Antarkan pada jam operasional", text: "Bawa sampah anorganik terpilah sesuai jadwal atau jam operasional titik drop-off." }
+          ]
+        }
+      ]
+    },
+    b3: {
+      name: "B3",
+      weight: 0.4,
+      maxCapacity: 5,
+      color: "#b8422f",
+      dimVar: "var(--b3-dim)",
+      subLabel: "bahan berbahaya & beracun",
+      callout: {
+        title: "Perlu penanganan khusus",
+        text: "Sampah B3 rumah tangga &mdash; seperti baterai bekas, lampu, elektronik kecil, dan kemasan bahan kimia &mdash; mengandung zat yang bisa mencemari tanah dan air tanah jika dibuang sembarangan bersama sampah lain. Penanganannya memerlukan kehati-hatian ekstra dari tahap penyimpanan hingga penyerahan akhir."
+      },
+      steps: [
+        { title: "Identifikasi jenis B3 rumah tangga", time: "sekali pelajari", text: "Kenali kategori umum: baterai (semua jenis), lampu bekas (neon, LED, hemat energi), elektronik kecil (ponsel, charger, kabel), serta kemasan bekas bahan kimia rumah tangga seperti pembersih, pestisida, atau cat.", tip: "Jika ragu suatu barang termasuk B3 atau tidak, perlakukan sebagai B3 dan pisahkan &mdash; lebih aman daripada tercampur sampah biasa." },
+        { title: "Simpan di wadah tertutup dan terpisah", time: "langsung saat dibuang", text: "Gunakan wadah non-logam yang tertutup rapat, khususnya untuk baterai, agar tidak bersentuhan langsung satu sama lain (risiko korsleting). Tempatkan wadah ini terpisah dari sampah organik maupun anorganik biasa." },
+        { title: "Jauhkan dari panas dan jangkauan anak", time: "selama disimpan", text: "Letakkan wadah B3 di tempat yang sejuk, kering, dan tidak terjangkau anak-anak. Baterai dan kemasan kimia bisa bereaksi berbahaya jika terkena suhu tinggi atau tertelan secara tidak sengaja." },
+        { title: "Jangan dibakar, ditekan, atau dibongkar", time: "selalu", text: "Baterai dan perangkat elektronik kecil berisiko meledak, mengeluarkan gas beracun, atau melepas logam berat jika dibakar, ditekan paksa, maupun dibongkar sendiri di rumah." },
+        { title: "Cari titik pengumpulan (drop box) terdekat", time: "10-15 menit riset", text: "Banyak pusat perbelanjaan, kantor kelurahan, sekolah, atau bank sampah tertentu menyediakan drop box khusus baterai dan elektronik kecil. Cek media sosial pemerintah daerah setempat untuk lokasi terbaru." },
+        { title: "Hubungi pengelola berizin untuk volume besar", time: "sesuai kebutuhan", text: "Untuk B3 dalam jumlah signifikan (misalnya sisa cat, oli, atau elektronik besar), hubungi Dinas Lingkungan Hidup setempat agar diarahkan ke pengelola limbah B3 yang memiliki izin resmi, bukan dibuang sendiri." }
+      ],
+      tags: [
+        {
+          name: "Drop box baterai",
+          steps: [
+            { title: "Kumpulkan baterai bekas", text: "Simpan semua jenis baterai bekas dalam wadah tertutup non-logam di rumah." },
+            { title: "Cari drop box terdekat", text: "Cek lokasi drop box baterai di mal, minimarket, kantor kelurahan, atau sekolah." },
+            { title: "Masukkan satu per satu", text: "Masukkan baterai ke drop box, pastikan kondisinya tidak bocor atau rusak parah." }
+          ]
+        },
+        {
+          name: "E-waste center",
+          steps: [
+            { title: "Pisahkan elektronik kecil", text: "Kumpulkan ponsel, charger, kabel, atau remote yang sudah tidak terpakai secara terpisah." },
+            { title: "Cari e-waste center terdekat", text: "Cek event pengumpulan e-waste dari komunitas lingkungan atau gerai elektronik terdekat." },
+            { title: "Serahkan untuk didaur ulang", text: "Beberapa e-waste center menerima gratis atau bahkan memberi insentif untuk daur ulang komponen secara aman." }
+          ]
+        },
+        {
+          name: "Dinas LH setempat",
+          steps: [
+            { title: "Kenali B3 dalam jumlah besar", text: "Untuk oli bekas, cat, atau limbah kimia rumah tangga dalam jumlah signifikan, jangan dibuang bersama sampah biasa." },
+            { title: "Hubungi Dinas Lingkungan Hidup", text: "Tanyakan prosedur dan jadwal penjemputan atau titik serah limbah B3 yang berizin resmi." },
+            { title: "Serahkan sesuai arahan", text: "Ikuti instruksi DLH agar limbah diproses oleh pengelola B3 berizin." }
+          ]
+        },
+        {
+          name: "Program tarik-balik produsen",
+          steps: [
+            { title: "Cek program take-back produk", text: "Beberapa merek lampu, baterai, atau elektronik menyediakan program tarik-balik untuk produk bekasnya." },
+            { title: "Hubungi produsen atau gerai resmi", text: "Tanyakan lewat customer service atau gerai resmi mengenai cara pengembalian produk bekas." },
+            { title: "Kirim atau serahkan produk", text: "Ikuti instruksi program agar produsen dapat mendaur ulang atau mengolahnya sesuai standar keamanan." }
+          ]
+        }
+      ]
+    },
+    residu: {
+      name: "Residu",
+      weight: 2.3,
+      maxCapacity: 5,
+      color: "#5b5f66",
+      dimVar: "var(--residu-dim)",
+      subLabel: "tidak terpilah / tidak bernilai daur ulang",
+      isResidu: true
+    }
+  };
+
+  const stepState = {}; // { organik: 3, anorganik: 0, ... } -> jumlah step yang sudah selesai
+
+  // ===== Composition ring =====
+  function renderRing() {
+    const ns = "http://www.w3.org/2000/svg";
+    const svg = document.getElementById("comp-ring");
+    svg.innerHTML = "";
+    const cx = 95, cy = 95, r = 78, sw = 20;
+    const circumference = 2 * Math.PI * r;
+
+    let total = 0;
+    Object.values(data).forEach(d => total += d.weight);
+    document.getElementById("total-num").textContent = total.toFixed(1);
+    document.getElementById("ring-total").innerHTML = total.toFixed(1) + '<span style="font-size:14px">kg</span>';
+
+    // background track
+    const track = document.createElementNS(ns, "circle");
+    track.setAttribute("cx", cx); track.setAttribute("cy", cy); track.setAttribute("r", r);
+    track.setAttribute("fill", "none");
+    track.setAttribute("stroke", "var(--line)");
+    track.setAttribute("stroke-width", sw);
+    svg.appendChild(track);
+
+    let offset = 0;
+    const legend = document.getElementById("ring-legend");
+    legend.innerHTML = "";
+    Object.entries(data).forEach(([key, d]) => {
+      const frac = total > 0 ? d.weight / total : 0;
+      const len = frac * circumference;
+      const circle = document.createElementNS(ns, "circle");
+      circle.setAttribute("cx", cx); circle.setAttribute("cy", cy); circle.setAttribute("r", r);
+      circle.setAttribute("fill", "none");
+      circle.setAttribute("stroke", d.color);
+      circle.setAttribute("stroke-width", sw);
+      circle.setAttribute("stroke-dasharray", `${len} ${circumference - len}`);
+      circle.setAttribute("stroke-dashoffset", -offset);
+      circle.style.transition = "stroke-dasharray 0.8s ease";
+      svg.appendChild(circle);
+      offset += len;
+
+      const li = document.createElement("div");
+      li.className = "legend-item";
+      li.innerHTML = `<span class="sw" style="background:${d.color}"></span> ${d.name} &middot; ${(frac*100).toFixed(0)}%`;
+      legend.appendChild(li);
+    });
+  }
+
+  function renderCards() {
+    const grid = document.getElementById("card-grid");
+    let total = 0;
+    Object.values(data).forEach(d => total += d.weight);
+
+    grid.innerHTML = "";
+    Object.entries(data).forEach(([key, d]) => {
+      const cap = d.maxCapacity || 5;
+      const pctRaw = (d.weight / cap) * 100;
+      const pct = Math.min(100, Math.round(pctRaw));
+      const isFull = pctRaw >= 100;
+      const card = document.createElement("button");
+      card.className = "card";
+      card.dataset.cat = key;
+      card.style.setProperty("--card-color", d.color);
+      card.style.setProperty("--card-dim", d.dimVar);
+      card.onclick = () => showDetail(key);
+      card.innerHTML = `
+        <div class="card-top">
+          <div class="card-icon">${icons[key]}</div>
+          <span class="card-arrow">&#8599;</span>
+        </div>
+        <div>
+          <div class="card-name">${d.name}</div>
+          <div class="card-sub">${d.subLabel}</div>
+        </div>
+        <div class="card-weight">
+          <span class="num">${d.weight.toFixed(1)}</span>
+          <span class="unit">kg</span>
+        </div>
+        <div class="card-bar"><div class="card-bar-fill" style="width:${pct}%; ${isFull ? "background:var(--b3)" : ""}"></div></div>
+        <div class="card-pct" style="${isFull ? "color:var(--b3); font-weight:600;" : ""}">${isFull ? `Kapasitas penuh &middot; maks ${cap} kg` : `${pct}% dari kapasitas wadah (maks ${cap} kg)`}</div>
+      `;
+      grid.appendChild(card);
+    });
+  }
+
+  function capacityText(d) {
+    const cap = d.maxCapacity || 5;
+    const pctRaw = (d.weight / cap) * 100;
+    const pct = Math.min(100, Math.round(pctRaw));
+    if (pctRaw >= 100) return `${d.subLabel} \u00B7 kapasitas penuh (maks ${cap} kg)`;
+    return `${d.subLabel} \u00B7 ${pct}% dari kapasitas wadah (maks ${cap} kg)`;
+  }
+
+  function showDashboard() {
+    document.getElementById("view-dashboard").classList.add("active");
+    document.getElementById("view-detail").classList.remove("active");
+    document.getElementById("topbar").classList.remove("in-detail");
+    window.scrollTo(0, 0);
+  }
+
+  function showDetail(key) {
+    const d = data[key];
+    document.getElementById("view-dashboard").classList.remove("active");
+    document.getElementById("view-detail").classList.add("active");
+    document.getElementById("topbar").classList.add("in-detail");
+    document.getElementById("topbar-detail-label").textContent = d.name;
+    window.scrollTo(0, 0);
+
+    document.querySelector('.view#view-detail').style.setProperty('--card-color', d.color);
+    document.querySelector('.view#view-detail').style.setProperty('--card-dim', d.dimVar);
+
+    document.getElementById("d-label").innerHTML = `<span class="sw" style="background:${d.color}"></span> ${d.name}`;
+    document.getElementById("d-num").textContent = d.weight.toFixed(1);
+    document.getElementById("d-sub").textContent = capacityText(d);
+
+    const body = document.getElementById("d-body");
+    const ringWrap = document.getElementById("progress-ring-wrap");
+
+    if (d.isResidu) {
+      ringWrap.style.display = "none";
+      document.getElementById("d-title").textContent = "Sampah residu dikirim ke TPST Bantar Gebang";
+      body.innerHTML = `
+        <div class="callout" style="background:${d.dimVar}">
+          <b>Apa itu residu?</b>
+          Residu adalah sampah yang tidak dapat dipilah lebih lanjut menjadi organik, anorganik bernilai daur ulang, atau B3 &mdash; misalnya campuran material yang sulit dipisahkan, popok, puntung rokok, atau debu sisa penyapuan. Jenis ini menjadi tahap akhir setelah seluruh proses pemilahan dilakukan.
+        </div>
+        <h2>Alur pengiriman</h2>
+        <p class="section-desc">Residu dari alat ini dikumpulkan secara berkala dan diteruskan ke tempat pemrosesan akhir sesuai jalur pengelolaan sampah setempat.</p>
+        <div class="route">
+          <div class="route-point">
+            <div class="label">Titik kumpul</div>
+            <div class="name">Smart Trash Vision</div>
+          </div>
+          <div class="route-arrow">&rarr;</div>
+          <div class="route-point">
+            <div class="label">Tujuan akhir</div>
+            <div class="name">TPST Bantar Gebang</div>
+          </div>
+        </div>
+        <h2 class="sec2">Mengurangi residu sejak awal</h2>
+        <p class="section-desc">Sebagian residu sebenarnya bisa dicegah sebelum terbentuk, dengan langkah-langkah berikut:</p>
+        <div class="steps">
+          <div class="step">
+            <div class="step-marker">1</div>
+            <div class="step-content">
+              <div class="step-title-row"><span class="step-title">Periksa ulang sebelum membuang</span></div>
+              <div class="step-text">Barang yang terasa "tidak bisa dipilah" kadang sebenarnya masih masuk kategori anorganik jika dibersihkan, atau organik jika bahan dasarnya alami.</div>
+            </div>
+          </div>
+          <div class="step">
+            <div class="step-marker">2</div>
+            <div class="step-content">
+              <div class="step-title-row"><span class="step-title">Kurangi kemasan multilayer</span></div>
+              <div class="step-text">Kemasan yang terdiri dari campuran plastik dan aluminium (seperti bungkus makanan ringan) sulit didaur ulang dan sering berakhir sebagai residu &mdash; kurangi penggunaannya bila memungkinkan.</div>
+            </div>
+          </div>
+          <div class="step">
+            <div class="step-marker">3</div>
+            <div class="step-content">
+              <div class="step-title-row"><span class="step-title">Padatkan sebelum pengangkutan</span></div>
+              <div class="step-text">Menekan volume residu membantu efisiensi pengangkutan menuju TPST dan mengurangi frekuensi pengangkutan yang dibutuhkan.</div>
+            </div>
+          </div>
+        </div>
+      `;
+    } else {
+      ringWrap.style.display = "flex";
+      document.getElementById("d-title").textContent = `Panduan mengolah sampah ${d.name.toLowerCase()}`;
+      body.innerHTML = `
+        <div class="callout" style="background:${d.dimVar}">
+          <b>${d.callout.title}</b>
+          ${d.callout.text}
+        </div>
+        <h2>Langkah pengolahan</h2>
+        <p class="section-desc">Untuk ${d.weight.toFixed(1)} kg sampah ${d.name.toLowerCase()} yang tertampung saat ini &mdash; ikuti tahapan berikut secara berurutan, dan tandai setiap tahap yang sudah selesai dikerjakan.</p>
+        <div class="steps-progress-label"><span id="sp-label">0 / ${d.steps.length} tahap selesai</span><span id="sp-pct">0%</span></div>
+        <div class="steps-progress-bar"><div class="steps-progress-fill" id="sp-fill" style="width:0%"></div></div>
+        <div class="steps" id="steps-list"></div>
+        <div id="steps-done-banner"></div>
+        <h2 class="sec2">Bisa disalurkan ke</h2>
+        <p class="section-desc" style="margin-bottom:14px;">Ketuk salah satu pilihan untuk melihat langkah menyalurkan atau mengolahnya menjadi barang tersebut.</p>
+        <div class="tag-row" id="tag-row"></div>
+        <div id="route-detail"></div>
+      `;
+      if (!(key in stepState)) stepState[key] = 0;
+      renderSteps(key);
+      renderTags(key);
+    }
+  }
+
+  function renderTags(key) {
+    const d = data[key];
+    const row = document.getElementById("tag-row");
+    row.innerHTML = d.tags.map((t, i) =>
+      `<button type="button" class="tag" id="tag-${i}" onclick="showRoute('${key}', ${i})">${t.name}</button>`
+    ).join("");
+  }
+
+  function showRoute(key, idx) {
+    const d = data[key];
+    const route = d.tags[idx];
+
+    document.querySelectorAll('#tag-row .tag').forEach((el, i) => {
+      el.classList.toggle('active', i === idx);
+    });
+
+    const box = document.getElementById("route-detail");
+    box.innerHTML = `
+      <div class="route-detail">
+        <div class="route-detail-title"><span class="sw"></span> Langkah menyalurkan ke ${route.name}</div>
+        <div class="steps">
+          ${route.steps.map((s, i) => `
+            <div class="step info">
+              <div class="step-marker">${i + 1}</div>
+              <div class="step-content">
+                <div class="step-title-row"><span class="step-title">${s.title}</span></div>
+                <div class="step-text">${s.text}</div>
+              </div>
+            </div>
+          `).join("")}
+        </div>
+      </div>
+    `;
+    box.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+
+  function renderSteps(key) {
+    const d = data[key];
+    const done = stepState[key];
+    const list = document.getElementById("steps-list");
+    list.innerHTML = "";
+
+    d.steps.forEach((s, i) => {
+      const state = i < done ? "done" : (i === done ? "current" : "locked");
+      const div = document.createElement("div");
+      div.className = `step ${state}`;
+      div.innerHTML = `
+        <div class="step-marker">${state === "done" ? "&#10003;" : i + 1}</div>
+        <div class="step-content">
+          <div class="step-title-row">
+            <span class="step-title">${s.title}</span>
+            <span class="step-time">${s.time}</span>
+          </div>
+          <div class="step-text">${s.text}</div>
+          ${state === "current" && s.tip ? `<div class="step-tip">${s.tip}</div>` : ""}
+          ${state === "current" ? `<div class="step-action"><button class="step-btn" onclick="completeStep('${key}')">Tandai selesai &amp; lanjut &rarr;</button></div>` : ""}
+        </div>
+      `;
+      list.appendChild(div);
+    });
+
+    updateStepsProgress(key);
+  }
+
+  function completeStep(key) {
+    stepState[key] = Math.min(stepState[key] + 1, data[key].steps.length);
+    renderSteps(key);
+  }
+
+  function resetSteps(key) {
+    stepState[key] = 0;
+    renderSteps(key);
+  }
+
+  function updateStepsProgress(key) {
+    const d = data[key];
+    const done = stepState[key];
+    const total = d.steps.length;
+    const pct = Math.round((done/total)*100);
+
+    document.getElementById("sp-label").textContent = `${done} / ${total} tahap selesai`;
+    document.getElementById("sp-pct").textContent = `${pct}%`;
+    document.getElementById("sp-fill").style.width = `${pct}%`;
+
+    const circle = document.getElementById("progress-ring-circle");
+    const circumference = 201.06;
+    circle.style.strokeDashoffset = circumference - (pct/100) * circumference;
+    document.getElementById("progress-ring-n").textContent = `${done}/${total}`;
+
+    const banner = document.getElementById("steps-done-banner");
+    if (done >= total) {
+      banner.innerHTML = `
+        <div class="steps-done-banner">
+          <div>
+            <div class="msg">Semua tahap sudah ditandai selesai</div>
+            <div class="sub">Pengolahan ${d.name.toLowerCase()} untuk batch saat ini sudah tuntas.</div>
+          </div>
+          <button class="reset-btn" onclick="resetSteps('${key}')">Ulangi progres</button>
+        </div>
+      `;
+    } else {
+      banner.innerHTML = "";
+    }
+  }
+
+  renderRing();
+  renderCards();
+
+  // ===================== MQTT (live data dari ESP32) =====================
+  // Broker & topic HARUS SAMA dengan yang dipakai di kode ESP32 (Coding_ESP32_AI_5.ino).
+  // ESP32 konek ke HiveMQ Cloud via TLS biasa (port 8883), browser HARUS lewat
+  // WebSocket over TLS (port 8884 = wss) karena browser tidak bisa buka
+  // koneksi TCP mentah. HiveMQ Cloud WAJIB pakai username/password untuk semua client,
+  // termasuk dashboard ini.
+  const MQTT_WS_URL  = "wss://056aac3be83e418daf40efb24bc7d188.s1.eu.hivemq.cloud:8884/mqtt";
+  const MQTT_TOPIC   = "wastebin/berat";
+  const MQTT_USER    = "SmartTrashVision";
+  const MQTT_PASS    = "zakoikeren";
+
+  let mqttClient = null;
+  let lastUpdateAt = null;
+
+  function setConnStatus(state) {
+    // state: "connected" | "connecting" | "offline"
+    const dot = document.getElementById("mqtt-dot");
+    const full = document.getElementById("mqtt-status-full");
+    const short = document.getElementById("mqtt-status-short");
+
+    if (state === "connected") {
+      dot.classList.remove("offline");
+      full.textContent = "Alat terhubung " + (lastUpdateAt ? ("\u00B7 diperbarui " + lastUpdateAt) : "\u00B7 menunggu data");
+      short.textContent = "Terhubung";
+    } else if (state === "connecting") {
+      dot.classList.add("offline");
+      full.textContent = "Menghubungkan ke alat\u2026";
+      short.textContent = "Menghubungkan\u2026";
+    } else {
+      dot.classList.add("offline");
+      full.textContent = "Alat terputus \u00B7 mencoba lagi\u2026";
+      short.textContent = "Terputus";
+    }
+  }
+
+  function formatJamSekarang() {
+    const d = new Date();
+    return d.toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  }
+
+  function applyIncomingWeights(payload) {
+    // payload contoh dari ESP32: {"organik":4.2,"anorganik":3.1,"b3":0.4,"residu":2.3}
+    let changed = false;
+    ["organik", "anorganik", "b3", "residu"].forEach((key) => {
+      const val = payload[key];
+      if (typeof val === "number" && !Number.isNaN(val) && data[key]) {
+        data[key].weight = val;
+        changed = true;
+      }
+    });
+    if (!changed) return;
+
+    lastUpdateAt = formatJamSekarang();
+    renderRing();
+    renderCards();
+
+    // Kalau lagi buka halaman detail salah satu kategori, ikut refresh angkanya
+    const detailView = document.getElementById("view-detail");
+    if (detailView.classList.contains("active")) {
+      const label = document.getElementById("topbar-detail-label").textContent;
+      const activeEntry = Object.entries(data).find(([, d]) => d.name === label);
+      if (activeEntry) {
+        const [key, d] = activeEntry;
+        document.getElementById("d-num").textContent = d.weight.toFixed(1);
+        document.getElementById("d-sub").textContent = capacityText(d);
+        if (!d.isResidu) updateStepsProgress(key);
+      }
+    }
+
+    setConnStatus("connected");
+  }
+
+  function connectMQTT() {
+    if (typeof mqtt === "undefined") {
+      console.error("Library mqtt.js gagal dimuat, cek koneksi internet.");
+      setConnStatus("offline");
+      return;
+    }
+
+    setConnStatus("connecting");
+
+    mqttClient = mqtt.connect(MQTT_WS_URL, {
+      clientId: "stv-dashboard-" + Math.random().toString(16).slice(2, 10),
+      username: MQTT_USER,
+      password: MQTT_PASS,
+      reconnectPeriod: 3000,
+      connectTimeout: 10000,
+    });
+
+    mqttClient.on("connect", () => {
+      console.log("MQTT tersambung ke", MQTT_WS_URL);
+      setConnStatus("connected");
+      mqttClient.subscribe(MQTT_TOPIC, (err) => {
+        if (err) console.error("Gagal subscribe topic:", err);
+      });
+    });
+
+    mqttClient.on("reconnect", () => setConnStatus("connecting"));
+    mqttClient.on("close", () => setConnStatus("offline"));
+    mqttClient.on("offline", () => setConnStatus("offline"));
+    mqttClient.on("error", (err) => {
+      console.error("MQTT error:", err);
+      setConnStatus("offline");
+    });
+
+    mqttClient.on("message", (topic, message) => {
+      if (topic !== MQTT_TOPIC) return;
+      try {
+        const payload = JSON.parse(message.toString());
+        applyIncomingWeights(payload);
+      } catch (e) {
+        console.warn("Payload MQTT bukan JSON valid:", message.toString());
+      }
+    });
+  }
+
+  connectMQTT();
+
+  // Daftarkan service worker supaya dashboard ini bisa di-install jadi aplikasi
+  // (muncul tombol "Install" di Chrome/Edge, atau "Add to Home Screen" di iOS)
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", () => {
+      navigator.serviceWorker.register("service-worker.js").catch((err) => {
+        console.warn("Service worker gagal didaftarkan:", err);
+      });
+    });
+  }
+</script>
+
+</body>
+</html>
